@@ -60,11 +60,6 @@ static void calcSharrDeriv(const cv::Mat& src, cv::Mat& dst)
     CV_Assert(depth == CV_8U);
     dst.create(rows, cols, CV_MAKETYPE(DataType<deriv_type>::depth, cn*2));
 
-#ifdef HAVE_TEGRA_OPTIMIZATION
-    if (tegra::useTegra() && tegra::calcSharrDeriv(src, dst))
-        return;
-#endif
-
     int x, y, delta = (int)alignSize((cols + 2)*cn, 16);
     AutoBuffer<deriv_type> _tempBuf(delta*2 + 64);
     deriv_type *trow0 = alignPtr(_tempBuf + cn, 16), *trow1 = alignPtr(trow0 + delta, 16);
@@ -654,6 +649,7 @@ void cv::detail::LKTrackerInvoker::operator()(const Range& range) const
             prevDelta = delta;
         }
 
+        CV_Assert(status != NULL);
         if( status[ptidx] && err && level == 0 && (flags & OPTFLOW_LK_GET_MIN_EIGENVALS) == 0 )
         {
             Point2f nextPoint = nextPts[ptidx] - halfWin;
@@ -818,25 +814,25 @@ namespace
         {
         }
 
-        virtual Size getWinSize() const {return winSize;}
-        virtual void setWinSize(Size winSize_){winSize = winSize_;}
+        virtual Size getWinSize() const CV_OVERRIDE { return winSize;}
+        virtual void setWinSize(Size winSize_) CV_OVERRIDE { winSize = winSize_;}
 
-        virtual int getMaxLevel() const {return maxLevel;}
-        virtual void setMaxLevel(int maxLevel_){maxLevel = maxLevel_;}
+        virtual int getMaxLevel() const CV_OVERRIDE { return maxLevel;}
+        virtual void setMaxLevel(int maxLevel_) CV_OVERRIDE { maxLevel = maxLevel_;}
 
-        virtual TermCriteria getTermCriteria() const {return criteria;}
-        virtual void setTermCriteria(TermCriteria& crit_){criteria=crit_;}
+        virtual TermCriteria getTermCriteria() const CV_OVERRIDE { return criteria;}
+        virtual void setTermCriteria(TermCriteria& crit_) CV_OVERRIDE { criteria=crit_;}
 
-        virtual int getFlags() const {return flags; }
-        virtual void setFlags(int flags_){flags=flags_;}
+        virtual int getFlags() const CV_OVERRIDE { return flags; }
+        virtual void setFlags(int flags_) CV_OVERRIDE { flags=flags_;}
 
-        virtual double getMinEigThreshold() const {return minEigThreshold;}
-        virtual void setMinEigThreshold(double minEigThreshold_){minEigThreshold=minEigThreshold_;}
+        virtual double getMinEigThreshold() const CV_OVERRIDE { return minEigThreshold;}
+        virtual void setMinEigThreshold(double minEigThreshold_) CV_OVERRIDE { minEigThreshold=minEigThreshold_;}
 
         virtual void calc(InputArray prevImg, InputArray nextImg,
                           InputArray prevPts, InputOutputArray nextPts,
                           OutputArray status,
-                          OutputArray err = cv::noArray());
+                          OutputArray err = cv::noArray()) CV_OVERRIDE;
 
     private:
 #ifdef HAVE_OPENCL
@@ -848,6 +844,9 @@ namespace
             if (derivLambda < 0)
                 return false;
             if (maxLevel < 0 || winSize.width <= 2 || winSize.height <= 2)
+                return false;
+            if (winSize.width < 8 || winSize.height < 8 ||
+                winSize.width > 24 || winSize.height > 24)
                 return false;
             calcPatchSize();
             if (patch.x <= 0 || patch.x >= 6 || patch.y <= 0 || patch.y >= 6)
@@ -872,7 +871,7 @@ namespace
             std::vector<UMat> prevPyr; prevPyr.resize(maxLevel + 1);
             std::vector<UMat> nextPyr; nextPyr.resize(maxLevel + 1);
 
-            // allocate buffers with aligned pitch to be able to use cl_khr_image2d_from_buffer extention
+            // allocate buffers with aligned pitch to be able to use cl_khr_image2d_from_buffer extension
             // This is the required pitch alignment in pixels
             int pitchAlign = (int)ocl::Device::getDefault().imagePitchAlignment();
             if (pitchAlign>0)
@@ -882,7 +881,7 @@ namespace
                 for (int level = 1; level <= maxLevel; ++level)
                 {
                     int cols,rows;
-                    // allocate buffers with aligned pitch to be able to use image on buffer extention
+                    // allocate buffers with aligned pitch to be able to use image on buffer extension
                     cols = (prevPyr[level - 1].cols+1)/2;
                     rows = (prevPyr[level - 1].rows+1)/2;
                     prevPyr[level] = UMat(rows,(cols+pitchAlign-1)&(-pitchAlign),prevPyr[level-1].type()).colRange(0,cols);
@@ -964,11 +963,17 @@ namespace
             size_t globalThreads[3] = { 8 * (size_t)ptcount, 8};
             char calcErr = (0 == level) ? 1 : 0;
 
+            int wsx = 1, wsy = 1;
+            if(winSize.width < 16)
+                wsx = 0;
+            if(winSize.height < 16)
+                wsy = 0;
             cv::String build_options;
             if (isDeviceCPU())
                 build_options = " -D CPU";
             else
-                build_options = cv::format("-D WAVE_SIZE=%d", waveSize);
+                build_options = cv::format("-D WAVE_SIZE=%d -D WSX=%d -D WSY=%d",
+                                           waveSize, wsx, wsy);
 
             ocl::Kernel kernel;
             if (!kernel.create("lkSparse", cv::ocl::video::pyrlk_oclsrc, build_options))
@@ -1074,6 +1079,9 @@ namespace
         if(prevImgMat.type() != CV_8UC1 || nextImgMat.type() != CV_8UC1)
             return false;
 
+        if (ovx::skipSmallImages<VX_KERNEL_OPTICAL_FLOW_PYR_LK>(prevImgMat.cols, prevImgMat.rows))
+            return false;
+
         CV_Assert(prevImgMat.size() == nextImgMat.size());
         Mat prevPtsMat = _prevPts.getMat();
         int checkPrev = prevPtsMat.checkVector(2, CV_32F, false);
@@ -1099,7 +1107,7 @@ namespace
 
         try
         {
-            Context context = Context::create();
+            Context context = ovx::getOpenVXContext();
 
             if(context.vendorID() == VX_ID_KHRONOS)
             {
@@ -1213,7 +1221,7 @@ void SparsePyrLKOpticalFlowImpl::calc( InputArray _prevImg, InputArray _nextImg,
 {
     CV_INSTRUMENT_REGION()
 
-    CV_OCL_RUN(ocl::useOpenCL() &&
+    CV_OCL_RUN(ocl::isOpenCLActivated() &&
                (_prevImg.isUMat() || _nextImg.isUMat()) &&
                ocl::Image2D::isFormatSupported(CV_32F, 1, false),
                ocl_calcOpticalFlowPyrLK(_prevImg, _nextImg, _prevPts, _nextPts, _status, _err))
@@ -1365,12 +1373,7 @@ void SparsePyrLKOpticalFlowImpl::calc( InputArray _prevImg, InputArray _nextImg,
         CV_Assert(prevPyr[level * lvlStep1].size() == nextPyr[level * lvlStep2].size());
         CV_Assert(prevPyr[level * lvlStep1].type() == nextPyr[level * lvlStep2].type());
 
-#ifdef HAVE_TEGRA_OPTIMIZATION
-        typedef tegra::LKTrackerInvoker<cv::detail::LKTrackerInvoker> LKTrackerInvoker;
-#else
         typedef cv::detail::LKTrackerInvoker LKTrackerInvoker;
-#endif
-
         parallel_for_(Range(0, npoints), LKTrackerInvoker(prevPyr[level * lvlStep1], derivI,
                                                           nextPyr[level * lvlStep2], prevPts, nextPts,
                                                           status, err,
@@ -1439,7 +1442,7 @@ getRTMatrix( const Point2f* a, const Point2f* b,
     }
     else
     {
-        double sa[4][4]={{0.}}, sb[4]={0.}, m[4];
+        double sa[4][4]={{0.}}, sb[4]={0.}, m[4] = {0};
         Mat A( 4, 4, CV_64F, sa ), B( 4, 1, CV_64F, sb );
         Mat MM( 4, 1, CV_64F, m );
 
@@ -1597,7 +1600,7 @@ cv::Mat cv::estimateRigidTransform( InputArray src1, InputArray src2, bool fullA
         Point2f a[RANSAC_SIZE0];
         Point2f b[RANSAC_SIZE0];
 
-        // choose random 3 non-complanar points from A & B
+        // choose random 3 non-coplanar points from A & B
         for( i = 0; i < RANSAC_SIZE0; i++ )
         {
             for( k1 = 0; k1 < RANSAC_MAX_ITERS; k1++ )

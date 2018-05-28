@@ -2,7 +2,7 @@
 #include "opencv2/imgcodecs.hpp"
 #include "opencv2/highgui.hpp"
 
-using namespace std;
+// we're NOT "using namespace std;" here, to avoid collisions between the beta variable and std::beta in c++17
 using namespace cv;
 
 namespace
@@ -58,9 +58,16 @@ void on_gamma_correction_trackbar(int, void *)
 }
 }
 
-int main( int, char** argv )
+int main( int argc, char** argv )
 {
-    img_original = imread( argv[1] );
+
+    String imageName("../data/lena.jpg"); // by default
+    if (argc > 1)
+    {
+        imageName = argv[1];
+    }
+
+    img_original = imread( imageName );
     img_corrected = Mat(img_original.rows, img_original.cols*2, img_original.type());
     img_gamma_corrected = Mat(img_original.rows, img_original.cols*2, img_original.type());
 

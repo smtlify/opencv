@@ -83,6 +83,7 @@ CvSeq* icvApproximateChainTC89( CvChain* chain, int header_size,
         return cvEndWriteSeq( &writer );
     }
 
+    reader.code = 0;
     cvStartReadChainPoints( chain, &reader );
 
     temp.next = 0;
@@ -753,7 +754,7 @@ cvApproxPoly( const void* array, int header_size,
         }
         else
         {
-            CV_Error( CV_StsBadArg, "Input curves have uknown type" );
+            CV_Error( CV_StsBadArg, "Input curves have unknown type" );
         }
     }
 

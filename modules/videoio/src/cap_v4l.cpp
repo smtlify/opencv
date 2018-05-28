@@ -61,7 +61,7 @@ Second Patch:   August 28, 2004 Sfuncia Fabio fiblan@yahoo.it
 For Release:  OpenCV-Linux Beta4 Opencv-0.9.6
 
 FS: this patch fix not sequential index of device (unplugged device), and real numCameras.
-    for -1 index (icvOpenCAM_V4L) i dont use /dev/video but real device available, because
+    for -1 index (icvOpenCAM_V4L) I don't use /dev/video but real device available, because
     if /dev/video is a link to /dev/video0 and i unplugged device on /dev/video0, /dev/video
     is a bad link. I search the first available device with indexList.
 
@@ -159,8 +159,10 @@ the symptoms were damaged image and 'Corrupt JPEG data: premature end of data se
 11th patch: April 2, 2013, Forrest Reiling forrest.reiling@gmail.com
 Added v4l2 support for getting capture property CV_CAP_PROP_POS_MSEC.
 Returns the millisecond timestamp of the last frame grabbed or 0 if no frames have been grabbed
-Used to successfully synchonize 2 Logitech C310 USB webcams to within 16 ms of one another
+Used to successfully synchronize 2 Logitech C310 USB webcams to within 16 ms of one another
 
+12th patch: March 9, 2018, Taylor Lanclos <tlanclos@live.com>
+ added support for CV_CAP_PROP_BUFFERSIZE
 
 make & enjoy!
 
@@ -209,7 +211,7 @@ make & enjoy!
 
 #include "precomp.hpp"
 
-#if !defined WIN32 && (defined HAVE_CAMV4L2 || defined HAVE_VIDEOIO)
+#if !defined _WIN32 && (defined HAVE_CAMV4L2 || defined HAVE_VIDEOIO)
 
 #include <stdio.h>
 #include <unistd.h>
@@ -231,7 +233,7 @@ make & enjoy!
 #endif
 
 #ifdef HAVE_VIDEOIO
-// NetBSD compability layer with V4L2
+// NetBSD compatibility layer with V4L2
 #include <sys/videoio.h>
 #endif
 
@@ -265,7 +267,7 @@ struct buffer
 
 static unsigned int n_buffers = 0;
 
-struct CvCaptureCAM_V4L : public CvCapture
+struct CvCaptureCAM_V4L CV_FINAL : public CvCapture
 {
     int deviceHandle;
     int bufferIndex;
@@ -277,9 +279,11 @@ struct CvCaptureCAM_V4L : public CvCapture
 
    __u32 palette;
    int width, height;
+   int bufferSize;
    __u32 fps;
    bool convert_rgb;
    bool frame_allocated;
+   bool returnFrame;
 
    /* V4L2 variables */
    buffer buffers[MAX_V4L_BUFFERS + 1];
@@ -300,10 +304,10 @@ struct CvCaptureCAM_V4L : public CvCapture
    bool open(int _index);
    bool open(const char* deviceName);
 
-   virtual double getProperty(int) const;
-   virtual bool setProperty(int, double);
-   virtual bool grabFrame();
-   virtual IplImage* retrieveFrame(int);
+   virtual double getProperty(int) const CV_OVERRIDE;
+   virtual bool setProperty(int, double) CV_OVERRIDE;
+   virtual bool grabFrame() CV_OVERRIDE;
+   virtual IplImage* retrieveFrame(int) CV_OVERRIDE;
 
    Range getRange(int property_id) const {
        switch (property_id) {
@@ -397,7 +401,7 @@ static bool try_palette_v4l2(CvCaptureCAM_V4L* capture)
 
 static int try_init_v4l2(CvCaptureCAM_V4L* capture, const char *deviceName)
 {
-  // Test device for V4L2 compability
+  // Test device for V4L2 compatibility
   // Return value:
   // -1 then unable to open device
   //  0 then detected nothing
@@ -459,18 +463,18 @@ static int autosetup_capture_mode_v4l2(CvCaptureCAM_V4L* capture) {
     }
     __u32 try_order[] = {
             V4L2_PIX_FMT_BGR24,
+            V4L2_PIX_FMT_RGB24,
             V4L2_PIX_FMT_YVU420,
             V4L2_PIX_FMT_YUV411P,
+            V4L2_PIX_FMT_YUYV,
+            V4L2_PIX_FMT_UYVY,
+            V4L2_PIX_FMT_SBGGR8,
+            V4L2_PIX_FMT_SGBRG8,
+            V4L2_PIX_FMT_SN9C10X,
 #ifdef HAVE_JPEG
             V4L2_PIX_FMT_MJPEG,
             V4L2_PIX_FMT_JPEG,
 #endif
-            V4L2_PIX_FMT_YUYV,
-            V4L2_PIX_FMT_UYVY,
-            V4L2_PIX_FMT_SN9C10X,
-            V4L2_PIX_FMT_SBGGR8,
-            V4L2_PIX_FMT_SGBRG8,
-            V4L2_PIX_FMT_RGB24,
             V4L2_PIX_FMT_Y16
     };
 
@@ -684,7 +688,7 @@ static int _capture_V4L2 (CvCaptureCAM_V4L *capture)
 
    capture->req = v4l2_requestbuffers();
 
-   unsigned int buffer_number = DEFAULT_V4L_BUFFERS;
+   unsigned int buffer_number = capture->bufferSize;
 
    try_again:
 
@@ -785,7 +789,7 @@ bool CvCaptureCAM_V4L::open(int _index)
    char _deviceName[MAX_DEVICE_DRIVER_NAME];
 
    if (!numCameras)
-      icvInitCapture_V4L(); /* Havent called icvInitCapture yet - do it now! */
+      icvInitCapture_V4L(); /* Haven't called icvInitCapture yet - do it now! */
    if (!numCameras)
      return false; /* Are there any /dev/video input sources? */
 
@@ -817,9 +821,11 @@ bool CvCaptureCAM_V4L::open(const char* _deviceName)
     FirstCapture = 1;
     width = DEFAULT_V4L_WIDTH;
     height = DEFAULT_V4L_HEIGHT;
+    bufferSize = DEFAULT_V4L_BUFFERS;
     fps = DEFAULT_V4L_FPS;
     convert_rgb = true;
     deviceName = _deviceName;
+    returnFrame = true;
 
     return _capture_V4L2(this) == 1;
 }
@@ -847,6 +853,7 @@ static int read_frame_v4l2(CvCaptureCAM_V4L* capture) {
 
         default:
             /* display the error and stop processing */
+            capture->returnFrame = false;
             perror ("VIDIOC_DQBUF");
             return -1;
         }
@@ -861,11 +868,11 @@ static int read_frame_v4l2(CvCaptureCAM_V4L* capture) {
    //printf("got data in buff %d, len=%d, flags=0x%X, seq=%d, used=%d)\n",
    //	  buf.index, buf.length, buf.flags, buf.sequence, buf.bytesused);
 
-   if (-1 == ioctl (capture->deviceHandle, VIDIOC_QBUF, &buf))
-       perror ("VIDIOC_QBUF");
-
    //set timestamp in capture struct to be timestamp of most recent frame
    capture->timestamp = buf.timestamp;
+
+   if (-1 == ioctl (capture->deviceHandle, VIDIOC_QBUF, &buf))
+       perror ("VIDIOC_QBUF");
 
    return 1;
 }
@@ -908,7 +915,7 @@ static int mainloop_v4l2(CvCaptureCAM_V4L* capture) {
             if(returnCode == -1)
                 return -1;
             if(returnCode == 1)
-                break;
+                return 1;
         }
     }
     return 0;
@@ -953,7 +960,7 @@ static bool icvGrabFrameCAM_V4L(CvCaptureCAM_V4L* capture) {
 #if defined(V4L_ABORT_BADJPEG)
         // skip first frame. it is often bad -- this is unnotied in traditional apps,
         //  but could be fatal if bad jpeg is enabled
-        if(mainloop_v4l2(capture) == -1)
+        if(mainloop_v4l2(capture) != 1)
                 return false;
 #endif
 
@@ -961,7 +968,7 @@ static bool icvGrabFrameCAM_V4L(CvCaptureCAM_V4L* capture) {
       capture->FirstCapture = 0;
    }
 
-   if(mainloop_v4l2(capture) == -1) return false;
+   if(mainloop_v4l2(capture) != 1) return false;
 
    return true;
 }
@@ -1581,7 +1588,10 @@ static IplImage* icvRetrieveFrameCAM_V4L( CvCaptureCAM_V4L* capture, int) {
         break;
     }
 
-    return(&capture->frame);
+    if (capture->returnFrame)
+        return(&capture->frame);
+    else
+        return 0;
 }
 
 static inline __u32 capPropertyToV4L2(int prop) {
@@ -1630,9 +1640,11 @@ static double icvGetPropertyCAM_V4L (const CvCaptureCAM_V4L* capture,
       case CV_CAP_PROP_MODE:
           return capture->palette;
       case CV_CAP_PROP_FORMAT:
-          return CV_MAKETYPE(CV_8U, capture->frame.nChannels);
+          return CV_MAKETYPE(IPL2CV_DEPTH(capture->frame.depth), capture->frame.nChannels);
       case CV_CAP_PROP_CONVERT_RGB:
           return capture->convert_rgb;
+      case CV_CAP_PROP_BUFFERSIZE:
+          return capture->bufferSize;
       }
 
       if(property_id == CV_CAP_PROP_FPS) {
@@ -1772,6 +1784,7 @@ static int icvSetPropertyCAM_V4L( CvCaptureCAM_V4L* capture,
     switch (property_id) {
     case CV_CAP_PROP_FRAME_WIDTH:
         width = cvRound(value);
+        retval = width != 0;
         if(width !=0 && height != 0) {
             capture->width = width;
             capture->height = height;
@@ -1781,6 +1794,7 @@ static int icvSetPropertyCAM_V4L( CvCaptureCAM_V4L* capture,
         break;
     case CV_CAP_PROP_FRAME_HEIGHT:
         height = cvRound(value);
+        retval = height != 0;
         if(width !=0 && height != 0) {
             capture->width = width;
             capture->height = height;
@@ -1812,6 +1826,18 @@ static int icvSetPropertyCAM_V4L( CvCaptureCAM_V4L* capture,
             }
         }
         break;
+    case CV_CAP_PROP_BUFFERSIZE:
+        if ((int)value > MAX_V4L_BUFFERS || (int)value < 1) {
+            fprintf(stderr, "V4L: Bad buffer size %d, buffer size must be from 1 to %d\n", (int)value, MAX_V4L_BUFFERS);
+            retval = false;
+        } else {
+            capture->bufferSize = (int)value;
+            if (capture->bufferIndex > capture->bufferSize) {
+                capture->bufferIndex = 0;
+            }
+            retval = v4l2_reset(capture);
+        }
+        break;
     default:
         retval = icvSetControl(capture, property_id, value);
         break;
@@ -1833,10 +1859,14 @@ static void icvCloseCAM_V4L( CvCaptureCAM_V4L* capture ){
                perror ("Unable to stop the stream");
        }
 
-       for (unsigned int n_buffers_ = 0; n_buffers_ < capture->req.count; ++n_buffers_)
+       for (unsigned int n_buffers_ = 0; n_buffers_ < MAX_V4L_BUFFERS; ++n_buffers_)
        {
-           if (-1 == munmap (capture->buffers[n_buffers_].start, capture->buffers[n_buffers_].length)) {
-               perror ("munmap");
+           if (capture->buffers[n_buffers_].start) {
+               if (-1 == munmap (capture->buffers[n_buffers_].start, capture->buffers[n_buffers_].length)) {
+                   perror ("munmap");
+               } else {
+                   capture->buffers[n_buffers_].start = 0;
+               }
            }
        }
 

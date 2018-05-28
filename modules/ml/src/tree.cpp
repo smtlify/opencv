@@ -115,7 +115,7 @@ DTreesImpl::WorkData::WorkData(const Ptr<TrainData>& _data)
     maxSubsetSize = 0;
 }
 
-DTreesImpl::DTreesImpl() {}
+DTreesImpl::DTreesImpl() : _isClassifier(false) {}
 DTreesImpl::~DTreesImpl() {}
 void DTreesImpl::clear()
 {
@@ -632,6 +632,7 @@ void DTreesImpl::calcValue( int nidx, const vector<int>& _sidx )
         }
 
         node->node_risk = sum2 - (sum/sumw)*sum;
+        node->node_risk /= sumw;
         node->value = sum/sumw;
     }
 }
@@ -1442,6 +1443,7 @@ float DTreesImpl::predictTrees( const Range& range, const Mat& sample, int flags
                             CV_Error( CV_StsBadArg,
                                      "one of input categorical variable is not an integer" );
 
+                        CV_Assert(cmap != NULL);
                         while( a < b )
                         {
                             c = (a + b) >> 1;
