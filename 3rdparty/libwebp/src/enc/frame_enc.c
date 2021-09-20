@@ -31,10 +31,15 @@
 // we allow 2k of extra head-room in PARTITION0 limit.
 #define PARTITION0_SIZE_LIMIT ((VP8_MAX_PARTITION0_SIZE - 2048ULL) << 11)
 
+static float Clamp(float v, float min, float max) {
+  return (v < min) ? min : (v > max) ? max : v;
+}
+
 typedef struct {  // struct for organizing convergence in either size or PSNR
   int is_first;
   float dq;
   float q, last_q;
+  float qmin, qmax;
   double value, last_value;   // PSNR or size
   double target;
   int do_size_search;
@@ -47,17 +52,15 @@ static int InitPassStats(const VP8Encoder* const enc, PassStats* const s) {
 
   s->is_first = 1;
   s->dq = 10.f;
-  s->q = s->last_q = enc->config_->quality;
+  s->qmin = 1.f * enc->config_->qmin;
+  s->qmax = 1.f * enc->config_->qmax;
+  s->q = s->last_q = Clamp(enc->config_->quality, s->qmin, s->qmax);
   s->target = do_size_search ? (double)target_size
             : (target_PSNR > 0.) ? target_PSNR
             : 40.;   // default, just in case
   s->value = s->last_value = 0.;
   s->do_size_search = do_size_search;
   return do_size_search;
-}
-
-static float Clamp(float v, float min, float max) {
-  return (v < min) ? min : (v > max) ? max : v;
 }
 
 static float ComputeNextQ(PassStats* const s) {
@@ -75,7 +78,7 @@ static float ComputeNextQ(PassStats* const s) {
   s->dq = Clamp(dq, -30.f, 30.f);
   s->last_q = s->q;
   s->last_value = s->value;
-  s->q = Clamp(s->q + s->dq, 0.f, 100.f);
+  s->q = Clamp(s->q + s->dq, s->qmin, s->qmax);
   return s->q;
 }
 
@@ -198,7 +201,7 @@ static void SetSegmentProbas(VP8Encoder* const enc) {
 
   for (n = 0; n < enc->mb_w_ * enc->mb_h_; ++n) {
     const VP8MBInfo* const mb = &enc->mb_info_[n];
-    p[mb->segment_]++;
+    ++p[mb->segment_];
   }
 #if !defined(WEBP_DISABLE_STATS)
   if (enc->pic_->stats != NULL) {
@@ -520,6 +523,14 @@ static void StoreSideInfo(const VP8EncIterator* const it) {
 #endif
 }
 
+static void ResetSideInfo(const VP8EncIterator* const it) {
+  VP8Encoder* const enc = it->enc_;
+  WebPPicture* const pic = enc->pic_;
+  if (pic->stats != NULL) {
+    memset(enc->block_count_, 0, sizeof(enc->block_count_));
+  }
+  ResetSSE(enc);
+}
 #else  // defined(WEBP_DISABLE_STATS)
 static void ResetSSE(VP8Encoder* const enc) {
   (void)enc;
@@ -528,9 +539,15 @@ static void StoreSideInfo(const VP8EncIterator* const it) {
   VP8Encoder* const enc = it->enc_;
   WebPPicture* const pic = enc->pic_;
   if (pic->extra_info != NULL) {
-    memset(pic->extra_info, 0,
-           enc->mb_w_ * enc->mb_h_ * sizeof(*pic->extra_info));
+    if (it->x_ == 0 && it->y_ == 0) {   // only do it once, at start
+      memset(pic->extra_info, 0,
+             enc->mb_w_ * enc->mb_h_ * sizeof(*pic->extra_info));
+    }
   }
+}
+
+static void ResetSideInfo(const VP8EncIterator* const it) {
+  (void)it;
 }
 #endif  // !defined(WEBP_DISABLE_STATS)
 
@@ -570,7 +587,7 @@ static uint64_t OneStatPass(VP8Encoder* const enc, VP8RDLevel rd_opt,
     VP8IteratorImport(&it, NULL);
     if (VP8Decimate(&it, &info, rd_opt)) {
       // Just record the number of skips and act like skip_proba is not used.
-      enc->proba_.nb_skip_++;
+      ++enc->proba_.nb_skip_;
     }
     RecordResiduals(&it, &info);
     size += info.R + info.H;
@@ -834,13 +851,17 @@ int VP8EncTokenLoop(VP8Encoder* const enc) {
     }
 
 #if (DEBUG_SEARCH > 0)
-    printf("#%2d metric:%.1lf -> %.1lf   last_q=%.2lf q=%.2lf dq=%.2lf\n",
+    printf("#%2d metric:%.1lf -> %.1lf   last_q=%.2lf q=%.2lf dq=%.2lf "
+           " range:[%.1f, %.1f]\n",
            num_pass_left, stats.last_value, stats.value,
-           stats.last_q, stats.q, stats.dq);
+           stats.last_q, stats.q, stats.dq, stats.qmin, stats.qmax);
 #endif
     if (enc->max_i4_header_bits_ > 0 && size_p0 > PARTITION0_SIZE_LIMIT) {
       ++num_pass_left;
       enc->max_i4_header_bits_ >>= 1;  // strengthen header bit limitation...
+      if (is_last_pass) {
+        ResetSideInfo(&it);
+      }
       continue;                        // ...and start over
     }
     if (is_last_pass) {
@@ -871,4 +892,3 @@ int VP8EncTokenLoop(VP8Encoder* const enc) {
 #endif    // DISABLE_TOKEN_BUFFER
 
 //------------------------------------------------------------------------------
-

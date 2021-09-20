@@ -78,9 +78,16 @@ public:
 
     void detect( InputArray _image, std::vector<KeyPoint>& keypoints, InputArray _mask ) CV_OVERRIDE
     {
-        CV_INSTRUMENT_REGION()
+        CV_INSTRUMENT_REGION();
+
+        if(_image.empty())
+        {
+            keypoints.clear();
+            return;
+        }
 
         std::vector<Point2f> corners;
+        std::vector<float> cornersQuality;
 
         if (_image.isUMat())
         {
@@ -91,7 +98,7 @@ public:
                 ugrayImage = _image.getUMat();
 
             goodFeaturesToTrack( ugrayImage, corners, nfeatures, qualityLevel, minDistance, _mask,
-                                 blockSize, gradSize, useHarrisDetector, k );
+                                 cornersQuality, blockSize, gradSize, useHarrisDetector, k );
         }
         else
         {
@@ -100,14 +107,14 @@ public:
                 cvtColor( image, grayImage, COLOR_BGR2GRAY );
 
             goodFeaturesToTrack( grayImage, corners, nfeatures, qualityLevel, minDistance, _mask,
-                                blockSize, gradSize, useHarrisDetector, k );
+                                 cornersQuality, blockSize, gradSize, useHarrisDetector, k );
         }
 
+        CV_Assert(corners.size() == cornersQuality.size());
+
         keypoints.resize(corners.size());
-        std::vector<Point2f>::const_iterator corner_it = corners.begin();
-        std::vector<KeyPoint>::iterator keypoint_it = keypoints.begin();
-        for( ; corner_it != corners.end() && keypoint_it != keypoints.end(); ++corner_it, ++keypoint_it )
-            *keypoint_it = KeyPoint( *corner_it, (float)blockSize );
+        for (size_t i = 0; i < corners.size(); i++)
+            keypoints[i] = KeyPoint(corners[i], (float)blockSize, -1, cornersQuality[i]);
 
     }
 

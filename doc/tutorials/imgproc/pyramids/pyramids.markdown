@@ -1,8 +1,15 @@
 Image Pyramids {#tutorial_pyramids}
 ==============
 
+@tableofcontents
+
 @prev_tutorial{tutorial_morph_lines_detection}
 @next_tutorial{tutorial_threshold}
+
+|    |    |
+| -: | :- |
+| Original author | Ana Huamán |
+| Compatibility | OpenCV >= 3.0 |
 
 Goal
 ----
@@ -56,7 +63,7 @@ Theory
     entire pyramid.
 -   The procedure above was useful to downsample an image. What if we want to make it bigger?:
     columns filled with zeros (\f$0 \f$)
-    -   First, upsize the image to twice the original in each dimension, wit the new even rows and
+    -   First, upsize the image to twice the original in each dimension, with the new even rows and
     -   Perform a convolution with the same kernel shown above (multiplied by 4) to approximate the
         values of the "missing pixels"
 -   These two procedures (downsampling and upsampling as explained above) are implemented by the
@@ -163,7 +170,7 @@ Our program exits if the user presses **ESC**. Besides, it has two options:
     We use the function **pyrDown()** with three arguments (similarly to **pyrUp()**):
             -   *src*: The current and destination image  (to be shown on screen, supposedly half the input
                 image)
-            -   *Size( tmp.cols/2, tmp.rows/2 )* : The destination size. Since we are upsampling,
+            -   *Size( tmp.cols/2, tmp.rows/2 )* : The destination size. Since we are downsampling,
                 **pyrDown()** expects half the size the input image (in this case *src*).
 
 @add_toggle_cpp

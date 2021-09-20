@@ -1,6 +1,16 @@
 Canny Edge Detector {#tutorial_canny_detector}
 ===================
 
+@tableofcontents
+
+@prev_tutorial{tutorial_laplace_operator}
+@next_tutorial{tutorial_hough_lines}
+
+|    |    |
+| -: | :- |
+| Original author | Ana Huamán |
+| Compatibility | OpenCV >= 3.0 |
+
 Goal
 ----
 

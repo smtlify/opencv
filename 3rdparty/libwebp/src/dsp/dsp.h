@@ -51,9 +51,7 @@ extern "C" {
 # define __has_builtin(x) 0
 #endif
 
-// for now, none of the optimizations below are available in emscripten
-#if !defined(EMSCRIPTEN)
-
+#if !defined(HAVE_CONFIG_H)
 #if defined(_MSC_VER) && _MSC_VER > 1310 && \
     (defined(_M_X64) || defined(_M_IX86))
 #define WEBP_MSC_SSE2  // Visual C++ SSE2 targets
@@ -62,6 +60,7 @@ extern "C" {
 #if defined(_MSC_VER) && _MSC_VER >= 1500 && \
     (defined(_M_X64) || defined(_M_IX86))
 #define WEBP_MSC_SSE41  // Visual C++ SSE4.1 targets
+#endif
 #endif
 
 // WEBP_HAVE_* are used to indicate the presence of the instruction set in dsp
@@ -76,9 +75,8 @@ extern "C" {
 #define WEBP_USE_SSE41
 #endif
 
-#if defined(__AVX2__) || defined(WEBP_HAVE_AVX2)
-#define WEBP_USE_AVX2
-#endif
+#undef WEBP_MSC_SSE41
+#undef WEBP_MSC_SSE2
 
 // The intrinsics currently cause compiler errors with arm-nacl-gcc and the
 // inline assembly would need to be modified for use with Native Client.
@@ -114,8 +112,6 @@ extern "C" {
 #define WEBP_USE_MSA
 #endif
 
-#endif  /* EMSCRIPTEN */
-
 #ifndef WEBP_DSP_OMIT_C_CODE
 #define WEBP_DSP_OMIT_C_CODE 1
 #endif
@@ -141,6 +137,42 @@ extern "C" {
 #endif
 #endif
 
+#if defined(WEBP_USE_THREAD) && !defined(_WIN32)
+#include <pthread.h>  // NOLINT
+
+#define WEBP_DSP_INIT(func) do {                                    \
+  static volatile VP8CPUInfo func ## _last_cpuinfo_used =           \
+      (VP8CPUInfo)&func ## _last_cpuinfo_used;                      \
+  static pthread_mutex_t func ## _lock = PTHREAD_MUTEX_INITIALIZER; \
+  if (pthread_mutex_lock(&func ## _lock)) break;                    \
+  if (func ## _last_cpuinfo_used != VP8GetCPUInfo) func();          \
+  func ## _last_cpuinfo_used = VP8GetCPUInfo;                       \
+  (void)pthread_mutex_unlock(&func ## _lock);                       \
+} while (0)
+#else  // !(defined(WEBP_USE_THREAD) && !defined(_WIN32))
+#define WEBP_DSP_INIT(func) do {                                    \
+  static volatile VP8CPUInfo func ## _last_cpuinfo_used =           \
+      (VP8CPUInfo)&func ## _last_cpuinfo_used;                      \
+  if (func ## _last_cpuinfo_used == VP8GetCPUInfo) break;           \
+  func();                                                           \
+  func ## _last_cpuinfo_used = VP8GetCPUInfo;                       \
+} while (0)
+#endif  // defined(WEBP_USE_THREAD) && !defined(_WIN32)
+
+// Defines an Init + helper function that control multiple initialization of
+// function pointers / tables.
+/* Usage:
+   WEBP_DSP_INIT_FUNC(InitFunc) {
+     ...function body
+   }
+*/
+#define WEBP_DSP_INIT_FUNC(name)                             \
+  static WEBP_TSAN_IGNORE_FUNCTION void name ## _body(void); \
+  WEBP_TSAN_IGNORE_FUNCTION void name(void) {                \
+    WEBP_DSP_INIT(name ## _body);                            \
+  }                                                          \
+  static WEBP_TSAN_IGNORE_FUNCTION void name ## _body(void)
+
 #define WEBP_UBSAN_IGNORE_UNDEF
 #define WEBP_UBSAN_IGNORE_UNSIGNED_OVERFLOW
 #if defined(__clang__) && defined(__has_attribute)
@@ -161,9 +193,22 @@ extern "C" {
 #endif
 #endif
 
+// If 'ptr' is NULL, returns NULL. Otherwise returns 'ptr + off'.
+// Prevents undefined behavior sanitizer nullptr-with-nonzero-offset warning.
+#if !defined(WEBP_OFFSET_PTR)
+#define WEBP_OFFSET_PTR(ptr, off) (((ptr) == NULL) ? NULL : ((ptr) + (off)))
+#endif
+
 // Regularize the definition of WEBP_SWAP_16BIT_CSP (backward compatibility)
 #if !defined(WEBP_SWAP_16BIT_CSP)
 #define WEBP_SWAP_16BIT_CSP 0
+#endif
+
+// some endian fix (e.g.: mips-gcc doesn't define __BIG_ENDIAN__)
+#if !defined(WORDS_BIGENDIAN) && \
+    (defined(__BIG_ENDIAN__) || defined(_M_PPC) || \
+     (defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)))
+#define WORDS_BIGENDIAN
 #endif
 
 typedef enum {
@@ -189,7 +234,7 @@ WEBP_EXTERN VP8CPUInfo VP8GetCPUInfo;
 // avoiding a compiler warning.
 #define WEBP_DSP_INIT_STUB(func) \
   extern void func(void); \
-  WEBP_TSAN_IGNORE_FUNCTION void func(void) {}
+  void func(void) {}
 
 //------------------------------------------------------------------------------
 // Encoding
@@ -207,9 +252,9 @@ extern VP8Fdct VP8FTransform2;   // performs two transforms at a time
 extern VP8WHT VP8FTransformWHT;
 // Predictions
 // *dst is the destination block. *top and *left can be NULL.
-typedef void (*VP8IntraPreds)(uint8_t *dst, const uint8_t* left,
+typedef void (*VP8IntraPreds)(uint8_t* dst, const uint8_t* left,
                               const uint8_t* top);
-typedef void (*VP8Intra4Preds)(uint8_t *dst, const uint8_t* top);
+typedef void (*VP8Intra4Preds)(uint8_t* dst, const uint8_t* top);
 extern VP8Intra4Preds VP8EncPredLuma4;
 extern VP8IntraPreds VP8EncPredLuma16;
 extern VP8IntraPreds VP8EncPredChroma8;
@@ -578,6 +623,13 @@ void WebPMultRow_C(uint8_t* const ptr, const uint8_t* const alpha,
                    int width, int inverse);
 void WebPMultARGBRow_C(uint32_t* const ptr, int width, int inverse);
 
+#ifdef WORDS_BIGENDIAN
+// ARGB packing function: a/r/g/b input is rgba or bgra order.
+extern void (*WebPPackARGB)(const uint8_t* a, const uint8_t* r,
+                            const uint8_t* g, const uint8_t* b, int len,
+                            uint32_t* out);
+#endif
+
 // RGB packing function. 'step' can be 3 or 4. r/g/b input is rgb or bgr order.
 extern void (*WebPPackRGB)(const uint8_t* r, const uint8_t* g, const uint8_t* b,
                            int len, int step, uint32_t* out);
@@ -586,6 +638,8 @@ extern void (*WebPPackRGB)(const uint8_t* r, const uint8_t* g, const uint8_t* b,
 extern int (*WebPHasAlpha8b)(const uint8_t* src, int length);
 // This function returns true if src[4*i] contains a value different from 0xff.
 extern int (*WebPHasAlpha32b)(const uint8_t* src, int length);
+// replaces transparent values in src[] by 'color'.
+extern void (*WebPAlphaReplace)(uint32_t* src, int length, uint32_t color);
 
 // To be called first before using the above.
 void WebPInitAlphaProcessing(void);
@@ -629,4 +683,4 @@ void VP8FiltersInit(void);
 }    // extern "C"
 #endif
 
-#endif  /* WEBP_DSP_DSP_H_ */
+#endif  // WEBP_DSP_DSP_H_

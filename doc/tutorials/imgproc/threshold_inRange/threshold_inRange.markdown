@@ -1,6 +1,16 @@
 Thresholding Operations using inRange {#tutorial_threshold_inRange}
 =====================================
 
+@tableofcontents
+
+@prev_tutorial{tutorial_threshold}
+@next_tutorial{tutorial_filter_2d}
+
+|    |    |
+| -: | :- |
+| Original author | Lorena García |
+| Compatibility | Rishiraj Surti |
+
 Goal
 ----
 

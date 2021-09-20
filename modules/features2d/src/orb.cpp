@@ -143,7 +143,7 @@ HarrisResponses(const Mat& img, const std::vector<Rect>& layerinfo,
     float scale_sq_sq = scale * scale * scale * scale;
 
     AutoBuffer<int> ofsbuf(blockSize*blockSize);
-    int* ofs = ofsbuf;
+    int* ofs = ofsbuf.data();
     for( int i = 0; i < blockSize; i++ )
         for( int j = 0; j < blockSize; j++ )
             ofs[i*blockSize + j] = (int)(i*step + j);
@@ -655,7 +655,7 @@ class ORB_Impl CV_FINAL : public ORB
 {
 public:
     explicit ORB_Impl(int _nfeatures, float _scaleFactor, int _nlevels, int _edgeThreshold,
-             int _firstLevel, int _WTA_K, int _scoreType, int _patchSize, int _fastThreshold) :
+             int _firstLevel, int _WTA_K, ORB::ScoreType _scoreType, int _patchSize, int _fastThreshold) :
         nfeatures(_nfeatures), scaleFactor(_scaleFactor), nlevels(_nlevels),
         edgeThreshold(_edgeThreshold), firstLevel(_firstLevel), wta_k(_WTA_K),
         scoreType(_scoreType), patchSize(_patchSize), fastThreshold(_fastThreshold)
@@ -679,8 +679,8 @@ public:
     void setWTA_K(int wta_k_) CV_OVERRIDE { wta_k = wta_k_; }
     int getWTA_K() const CV_OVERRIDE { return wta_k; }
 
-    void setScoreType(int scoreType_) CV_OVERRIDE { scoreType = scoreType_; }
-    int getScoreType() const CV_OVERRIDE { return scoreType; }
+    void setScoreType(ORB::ScoreType scoreType_) CV_OVERRIDE{ scoreType = scoreType_; }
+    ORB::ScoreType getScoreType() const CV_OVERRIDE{ return scoreType; }
 
     void setPatchSize(int patchSize_) CV_OVERRIDE { patchSize = patchSize_; }
     int getPatchSize() const CV_OVERRIDE { return patchSize; }
@@ -707,7 +707,7 @@ protected:
     int edgeThreshold;
     int firstLevel;
     int wta_k;
-    int scoreType;
+    ORB::ScoreType scoreType;
     int patchSize;
     int fastThreshold;
 };
@@ -724,7 +724,16 @@ int ORB_Impl::descriptorType() const
 
 int ORB_Impl::defaultNorm() const
 {
-    return NORM_HAMMING;
+    switch (wta_k)
+    {
+    case 2:
+        return NORM_HAMMING;
+    case 3:
+    case 4:
+        return NORM_HAMMING2;
+    default:
+        return -1;
+    }
 }
 
 #ifdef HAVE_OPENCL
@@ -775,11 +784,11 @@ static void computeKeyPoints(const Mat& imagePyramid,
                              const std::vector<float>& layerScale,
                              std::vector<KeyPoint>& allKeypoints,
                              int nfeatures, double scaleFactor,
-                             int edgeThreshold, int patchSize, int scoreType,
+                             int edgeThreshold, int patchSize, ORB::ScoreType scoreType,
                              bool useOCL, int fastThreshold  )
 {
 #ifndef HAVE_OPENCL
-    (void)uimagePyramid;(void)ulayerInfo;(void)useOCL;
+    CV_UNUSED(uimagePyramid);CV_UNUSED(ulayerInfo);CV_UNUSED(useOCL);
 #endif
 
     int i, nkeypoints, level, nlevels = (int)layerInfo.size();
@@ -957,7 +966,7 @@ void ORB_Impl::detectAndCompute( InputArray _image, InputArray _mask,
                                  std::vector<KeyPoint>& keypoints,
                                  OutputArray _descriptors, bool useProvidedKeypoints )
 {
-    CV_INSTRUMENT_REGION()
+    CV_INSTRUMENT_REGION();
 
     CV_Assert(patchSize >= 2);
 
@@ -974,7 +983,11 @@ void ORB_Impl::detectAndCompute( InputArray _image, InputArray _mask,
     int descPatchSize = cvCeil(halfPatchSize*sqrt(2.0));
     int border = std::max(edgeThreshold, std::max(descPatchSize, HARRIS_BLOCK_SIZE/2))+1;
 
+#ifdef HAVE_OPENCL
     bool useOCL = ocl::isOpenCLActivated() && OCL_FORCE_CHECK(_image.isUMat() || _descriptors.isUMat());
+#else
+    bool useOCL = false;
+#endif
 
     Mat image = _image.getMat(), mask = _mask.getMat();
     if( image.type() != CV_8UC1 )
@@ -1012,15 +1025,20 @@ void ORB_Impl::detectAndCompute( InputArray _image, InputArray _mask,
     Mat imagePyramid, maskPyramid;
     UMat uimagePyramid, ulayerInfo;
 
-    int level_dy = image.rows + border*2;
-    Point level_ofs(0,0);
-    Size bufSize((cvRound(image.cols/getScale(0, firstLevel, scaleFactor)) + border*2 + 15) & -16, 0);
+    float level0_inv_scale = 1.0f / getScale(0, firstLevel, scaleFactor);
+    size_t level0_width = (size_t)cvRound(image.cols * level0_inv_scale);
+    size_t level0_height = (size_t)cvRound(image.rows * level0_inv_scale);
+    Size bufSize((int)alignSize(level0_width + border*2, 16), 0);  // TODO change alignment to 64
+
+    int level_dy = (int)level0_height + border*2;
+    Point level_ofs(0, 0);
 
     for( level = 0; level < nLevels; level++ )
     {
         float scale = getScale(level, firstLevel, scaleFactor);
         layerScale[level] = scale;
-        Size sz(cvRound(image.cols/scale), cvRound(image.rows/scale));
+        float inv_scale = 1.0f / scale;
+        Size sz(cvRound(image.cols * inv_scale), cvRound(image.rows * inv_scale));
         Size wholeSize(sz.width + border*2, sz.height + border*2);
         if( level_ofs.x + wholeSize.width > bufSize.width )
         {
@@ -1195,7 +1213,7 @@ void ORB_Impl::detectAndCompute( InputArray _image, InputArray _mask,
 }
 
 Ptr<ORB> ORB::create(int nfeatures, float scaleFactor, int nlevels, int edgeThreshold,
-           int firstLevel, int wta_k, int scoreType, int patchSize, int fastThreshold)
+           int firstLevel, int wta_k, ORB::ScoreType scoreType, int patchSize, int fastThreshold)
 {
     CV_Assert(firstLevel >= 0);
     return makePtr<ORB_Impl>(nfeatures, scaleFactor, nlevels, edgeThreshold,

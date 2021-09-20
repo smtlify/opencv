@@ -5,28 +5,34 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/highgui.hpp>
 
-const char* keys =
-    "{ help  h     | | Print help message. }"
-    "{ input i     | | Path to input image or video file. Skip this argument to capture frames from a camera.}"
-    "{ model m     | | Path to a binary file of model contains trained weights. "
-                      "It could be a file with extensions .caffemodel (Caffe), "
-                      ".pb (TensorFlow), .t7 or .net (Torch), .weights (Darknet) }"
-    "{ config c    | | Path to a text file of model contains network configuration. "
-                      "It could be a file with extensions .prototxt (Caffe), .pbtxt (TensorFlow), .cfg (Darknet) }"
-    "{ framework f | | Optional name of an origin framework of the model. Detect it automatically if it does not set. }"
-    "{ classes     | | Optional path to a text file with names of classes. }"
-    "{ mean        | | Preprocess input image by subtracting mean values. Mean values should be in BGR order and delimited by spaces. }"
-    "{ scale       | 1 | Preprocess input image by multiplying on a scale factor. }"
-    "{ width       |   | Preprocess input image by resizing to a specific width. }"
-    "{ height      |   | Preprocess input image by resizing to a specific height. }"
-    "{ rgb         |   | Indicate that model works with RGB input images instead BGR ones. }"
-    "{ backend     | 0 | Choose one of computation backends: "
-                        "0: default C++ backend, "
-                        "1: Halide language (http://halide-lang.org/), "
-                        "2: Intel's Deep Learning Inference Engine (https://software.seek.intel.com/deep-learning-deployment)}"
-    "{ target      | 0 | Choose one of target computation devices: "
-                        "0: CPU target (by default),"
-                        "1: OpenCL }";
+#include "common.hpp"
+
+std::string keys =
+    "{ help  h          | | Print help message. }"
+    "{ @alias           | | An alias name of model to extract preprocessing parameters from models.yml file. }"
+    "{ zoo              | models.yml | An optional path to file with preprocessing parameters }"
+    "{ input i          | | Path to input image or video file. Skip this argument to capture frames from a camera.}"
+    "{ initial_width    | 0 | Preprocess input image by initial resizing to a specific width.}"
+    "{ initial_height   | 0 | Preprocess input image by initial resizing to a specific height.}"
+    "{ std              | 0.0 0.0 0.0 | Preprocess input image by dividing on a standard deviation.}"
+    "{ crop             | false | Preprocess input image by center cropping.}"
+    "{ framework f      | | Optional name of an origin framework of the model. Detect it automatically if it does not set. }"
+    "{ classes          | | Optional path to a text file with names of classes. }"
+    "{ backend          | 0 | Choose one of computation backends: "
+                            "0: automatically (by default), "
+                            "1: Halide language (http://halide-lang.org/), "
+                            "2: Intel's Deep Learning Inference Engine (https://software.intel.com/openvino-toolkit), "
+                            "3: OpenCV implementation, "
+                            "4: VKCOM, "
+                            "5: CUDA },"
+    "{ target           | 0 | Choose one of target computation devices: "
+                            "0: CPU target (by default), "
+                            "1: OpenCL, "
+                            "2: OpenCL fp16 (half-float precision), "
+                            "3: VPU, "
+                            "4: Vulkan, "
+                            "6: CUDA, "
+                            "7: CUDA fp16 (half-float preprocess) }";
 
 using namespace cv;
 using namespace dnn;
@@ -36,6 +42,13 @@ std::vector<std::string> classes;
 int main(int argc, char** argv)
 {
     CommandLineParser parser(argc, argv, keys);
+
+    const std::string modelName = parser.get<String>("@alias");
+    const std::string zooFile = parser.get<String>("zoo");
+
+    keys += genPreprocArguments(modelName, zooFile);
+
+    parser = CommandLineParser(argc, argv, keys);
     parser.about("Use this script to run classification deep learning networks using OpenCV.");
     if (argc == 1 || parser.has("help"))
     {
@@ -43,14 +56,17 @@ int main(int argc, char** argv)
         return 0;
     }
 
+    int rszWidth = parser.get<int>("initial_width");
+    int rszHeight = parser.get<int>("initial_height");
     float scale = parser.get<float>("scale");
     Scalar mean = parser.get<Scalar>("mean");
+    Scalar std = parser.get<Scalar>("std");
     bool swapRB = parser.get<bool>("rgb");
-    CV_Assert(parser.has("width"), parser.has("height"));
+    bool crop = parser.get<bool>("crop");
     int inpWidth = parser.get<int>("width");
     int inpHeight = parser.get<int>("height");
-    String model = parser.get<String>("model");
-    String config = parser.get<String>("config");
+    String model = findFile(parser.get<String>("model"));
+    String config = findFile(parser.get<String>("config"));
     String framework = parser.get<String>("framework");
     int backendId = parser.get<int>("backend");
     int targetId = parser.get<int>("target");
@@ -69,7 +85,13 @@ int main(int argc, char** argv)
         }
     }
 
-    CV_Assert(parser.has("model"));
+    if (!parser.check())
+    {
+        parser.printErrors();
+        return 1;
+    }
+    CV_Assert(!model.empty());
+
     //! [Read and initialize network]
     Net net = readNet(model, config, framework);
     net.setPreferableBackend(backendId);
@@ -99,8 +121,20 @@ int main(int argc, char** argv)
             break;
         }
 
+        if (rszWidth != 0 && rszHeight != 0)
+        {
+            resize(frame, frame, Size(rszWidth, rszHeight));
+        }
+
         //! [Create a 4D blob from a frame]
-        blobFromImage(frame, blob, scale, Size(inpWidth, inpHeight), mean, swapRB, false);
+        blobFromImage(frame, blob, scale, Size(inpWidth, inpHeight), mean, swapRB, crop);
+
+        // Check std values.
+        if (std.val[0] != 0.0 && std.val[1] != 0.0 && std.val[2] != 0.0)
+        {
+            // Divide blob by std.
+            divide(blob, std, blob);
+        }
         //! [Create a 4D blob from a frame]
 
         //! [Set input blob]
